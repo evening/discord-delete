@@ -1,36 +1,49 @@
 import configparser
 import requests
+import sys
 import time
 
 config = configparser.ConfigParser()
 config.read("account.ini")
 s = requests.Session()
 s.headers, base = (
-    {"Authorization": config["Account"]["auth_key"]},
+    {"Authorization": config["Settings"]["auth_key"]},
     "https://discordapp.com/api/v6",
 )
 
-# def convert user ID to channel(DM) ID
-# for channel in s.get(f"{base}/users/@me/channels", params=params).json():
-#     if channel["type"] == 1 and channel["recipients"][0]["id"] == "#########":
-#         return print(channel["id"])
-#     for c, msg in enumerate(messages("channels", resource_id, user_id, params), 1):
+
+def convert_dm_rid(uid):
+    """Find DM channel ID based on user ID"""
+    for channel in s.get(f"{base}/users/@me/channels").json():
+        if channel["type"] == 1 and channel["recipients"][0]["id"] == uid:
+            return channel["id"]
+    return uid
 
 
 def main():
-    user_id = config["Account"]["user_id"]
-    resource_id = config["Account"]["resource_id"]
+    user_id = s.get(f"{base}/users/@me").json()["id"]
+    resource_id = config["Settings"]["resource_id"]
+
     params = {k: v for k, v in config["Params"].items() if v}
     params.update({"author_id": user_id})
-    info("guilds", resource_id, user_id)  # guilds, channels
-    for c, msg in enumerate(messages("guilds", resource_id, user_id, params), 1):
+
+    if config["Settings"]["type"] in ("server", "guilds"):
+        resource_type = "guilds"
+    elif config["Settings"]["type"] in ("DM", "channels"):
+        resource_id = convert_dm_rid(resource_id)
+        resource_type = "channels"
+    else:
+        sys.exit("set `type` to either `server` or `DM`")
+        
+    info(resource_type, resource_id)
+    for c, msg in enumerate(messages(resource_type, resource_id, params), 1):
         # https://discord.com/developers/docs/reference#snowflakes
         d = time.gmtime(((int(msg["id"]) >> 22) + 1_420_070_400_000) / 1000)
         print(c, f"{d.tm_mon}/{d.tm_mday}/{d.tm_year}", repr(msg["content"]))
         delete(msg)
 
 
-def messages(res, rid, uid, params):
+def messages(res, rid, params):
     r = s.get(f"{base}/{res}/{rid}/messages/search", params=params)
     code = r.status_code
     if code == 200:
@@ -43,7 +56,7 @@ def messages(res, rid, uid, params):
                 yield entry
             del msg
         if recovered:
-            yield from messages(res, rid, uid, params)
+            yield from messages(res, rid, params)
     elif code == 429:
         t = r.json()["retry_after"]
         print("Limited", code, t)
@@ -65,16 +78,13 @@ def delete(msg):
         time.sleep(0.15)
 
 
-def info(res, sid, uid):
-    r = s.get(f"{base}/{res}/{sid}")
-    if r.status_code != 200:
-        sys.exit(r.json())
-    resource_name = r.json().get("name")
-    r = s.get(f"{base}/users/{uid}")
-    if r.status_code != 200:
-        sys.exit(r.json())
-    username = r.json()["username"]
-    print(f"Deleting messages in {resource_name} by {username}")
+def info(res, sid):
+    username = s.get(f"{base}/users/@me").json()["username"]
+    r = s.get(f"{base}/{res}/{sid}").json()
+    if res == "guilds":
+        print(f"Deleting messages in {r['name']} by {username}")
+    elif res == "channels":
+        print(f"Deleting messages with {r['recipients'][0]['username']} by {username}")
 
 
 if __name__ == "__main__":
