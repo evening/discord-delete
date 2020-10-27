@@ -6,6 +6,7 @@ import time
 # from prompt_toolkit import prompt
 from prompt_toolkit.shortcuts import (confirm, ProgressBar)
 from prompt_toolkit.styles import Style
+from prompt_toolkit.formatted_text import HTML
 
 config = configparser.ConfigParser()
 config.read("account.ini")
@@ -14,6 +15,7 @@ s.headers, base = (
     {"Authorization": config["Settings"]["auth_key"]},
     "https://discordapp.com/api/v8",
 )
+params = {k: v for k, v in config["Params"].items() if v}
 
 
 def convert_dm_rid(uid):
@@ -25,10 +27,8 @@ def convert_dm_rid(uid):
 
 
 def main():
-    params = {k: v for k, v in config["Params"].items() if v}
     params.update({"author_id": s.get(f"{base}/users/@me").json()["id"]})
     resource_id = config["Settings"]["resource_id"]
-
     if config["Settings"]["type"] in ("server", "guilds"):
         resource_type = "guilds"
     elif config["Settings"]["type"] in ("DM", "channels"):
@@ -38,22 +38,20 @@ def main():
         sys.exit("set `type` to either `server` or `DM`")
 
     to_delete = f"messages in {get_title(resource_type, resource_id)}"
-    if not confirm(f"Delete {to_delete}?"):
+    if not confirm(HTML(f"Delete {to_delete}?")):
         sys.exit()
     with ProgressBar(
-        title=f"Deleting {to_delete}",
+        title=HTML(f"Deleting {to_delete}"),
         style=Style.from_dict({"bottom-toolbar": "noreverse"}),
     ) as pb:
         num_messages = s.get(
             f"{base}/{resource_type}/{resource_id}/messages/search", params=params
         ).json()["total_results"]
-        for msg, p in zip(
-            messages(resource_type, resource_id, params), pb(range(num_messages)),
-        ):
+        for msg in pb(messages(resource_type, resource_id),total=num_messages):
             delete(msg, pb)
 
 
-def messages(res, rid, params):
+def messages(res, rid):
     r = s.get(f"{base}/{res}/{rid}/messages/search", params=params)
     if r.status_code == 200:
         msgs = r.json()["messages"]
@@ -65,11 +63,11 @@ def messages(res, rid, params):
                 yield entry
             del msg
         if recovered:
-            yield from messages(res, rid, params)
+            yield from messages(res, rid)
     elif r.status_code == 429:
         t = r.json()["retry_after"]
         time.sleep(t)
-        messages(res, rid, params)
+        messages(res, rid)
     elif r.status_code >= 400:
         sys.exit(r.status_code, r.json())
 
@@ -80,13 +78,13 @@ def delete(msg, pb):
     r = s.delete(f"{base}/channels/{msg['channel_id']}/messages/{msg['id']}")
     if r.status_code == 429:
         t = r.json()["retry_after"]
-        pb.bottom_toolbar = f"Limited: {t}"
+        pb.title = HTML(f"<ansired>rate limited ({t})</ansired>")
         time.sleep(t)
         delete(msg, pb)
     elif r.status_code >= 400:
         sys.exit(r.status_code, r.json())
     else:
-        pb.bottom_toolbar = f"{d.tm_mon}/{d.tm_mday}/{d.tm_year} {msg['content']}"
+        pb.title = f"{d.tm_mon}/{d.tm_mday}/{d.tm_year} {msg['content']}"
         time.sleep(0.15)
 
 
@@ -94,9 +92,9 @@ def get_title(res, sid):
     username = s.get(f"{base}/users/@me").json()["username"]
     r = s.get(f"{base}/{res}/{sid}").json()
     if res == "guilds":
-        return f"{r['name']} by {username}"
+        return f"<ansired>{r['name']}</ansired> by <ansired>{username}</ansired>"
     elif res == "channels":
-        return f"{r['recipients'][0]['username']} by {username}"
+        return f"<ansired>{r['recipients'][0]['username']}</ansired> by <ansired>{username}</ansired>"
 
 
 if __name__ == "__main__":
